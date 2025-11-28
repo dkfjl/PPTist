@@ -60,6 +60,7 @@
             v-model:value="model"
             :options="[
               { label: 'GLM-4.5-Flash', value: 'GLM-4.5-Flash' },
+              { label: 'Gemini-3-Pro', value: 'gemini-3-pro-preview' },
               { label: 'Doubao-Seed-1.6-flash', value: 'ark-doubao-seed-1.6-flash' },
             ]"
           />
@@ -206,7 +207,7 @@ const createOutline = async () => {
     reader.read().then(({ done, value }) => {
       if (done) {
         outline.value = getMdContent(outline.value)
-        outline.value = outline.value.replace(/<!--[\s\S]*?-->/g, '').replace(/<think>[\s\S]*?<\/think>/g, '')
+        outline.value = outline.value.replace(/<!--[\s\S]*?-->/g, '').replace(/<\/think>[\s\S]*?<\/think>/g, '')
         outlineCreating.value = false
         return
       }
@@ -260,15 +261,18 @@ const createPPT = async (template?: { slides: Slide[], theme: SlideTheme }) => {
   
       const chunk = decoder.decode(value, { stream: true })
       try {
-        const text = chunk.replace('```json', '').replace('```', '').trim()
-        if (text) {
-          const slide: AIPPTSlide = JSON.parse(chunk)
-          AIPPT(templateSlides, [slide])
+        // 后端现在直接发送干净的JSON内容，每行一个JSON对象
+        const lines = chunk.split('\n').filter(line => line.trim())
+        for (const line of lines) {
+          if (line.trim()) {
+            const slide: AIPPTSlide = JSON.parse(line.trim())
+            AIPPT(templateSlides, [slide])
+          }
         }
       }
       catch (err) {
         // eslint-disable-next-line
-        console.error(err)
+        console.error('JSON解析错误:', err, '接收到的数据:', chunk)
       }
 
       readStream()

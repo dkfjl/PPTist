@@ -1,10 +1,26 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
+const { exec } = require('child_process');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Python配置
+const PYTHON_WORK_DIR = process.env.PYTHON_WORK_DIR || path.join(__dirname, 'python_ppt');
+
+// 确保Python工作目录存在
+try {
+  if (!fs.existsSync(PYTHON_WORK_DIR)) {
+    fs.mkdirSync(PYTHON_WORK_DIR, { recursive: true });
+  }
+}
+catch (e) {
+  console.warn('创建Python工作目录失败:', e);
+}
 
 // 中间件
 app.use(cors({
@@ -41,11 +57,6 @@ const MODEL_CONFIGS = {
   'GLM-4.5-Flash': {
     provider: 'zhipu',
     model: 'glm-4-flash',
-    url: `${ZHIPU_BASE_URL}/chat/completions`
-  },
-  'GLM-4.6': {
-    provider: 'zhipu',
-    model: 'glm-4.6',
     url: `${ZHIPU_BASE_URL}/chat/completions`
   },
   'ark-doubao-seed-1.6-flash': {
@@ -104,8 +115,9 @@ async function callAI(model, messages, stream = false) {
         model: config.model,
         messages: messages,
         stream: stream,
-        temperature: 0.7,
-        max_tokens: 4000
+        temperature: 0.5,
+        // 使用更安全的 token 上限，避免第三方 OpenAI 兼容服务因上限过大返回 400
+        max_tokens: 4096
       };
       break;
     default:
@@ -182,8 +194,41 @@ JSON格式示例：
       'Access-Control-Allow-Origin': '*'
     });
 
-    // 流式传输响应
-    response.data.pipe(res);
+    // 处理流式数据，解析OpenAI格式并传输纯净内容
+    response.data.on('data', (chunk) => {
+      const lines = chunk.toString().split('\n').filter(line => line.trim());
+      
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') {
+            res.end();
+            return;
+          }
+          
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed.choices?.[0]?.delta?.content;
+            if (content) {
+              // 直接传输内容，前端会累积处理
+              res.write(content);
+            }
+          }
+          catch (e) {
+            console.error('解析流式数据失败:', e);
+          }
+        }
+      }
+    });
+
+    response.data.on('end', () => {
+      res.end();
+    });
+
+    response.data.on('error', (err) => {
+      console.error('流式响应错误:', err);
+      res.end();
+    });
 
   }
   catch (error) {
@@ -265,9 +310,15 @@ ${content}
       }
     ];
 
-    const response = await callAI(model, messages, true);
+    // 这里改为非流式调用，拿到完整内容后再切分为多行 JSON 对象
+    const aiResponse = await callAI(model, messages, false);
+    const rawText = aiResponse.data?.choices?.[0]?.message?.content || '';
 
-    // 设置流式响应头
+    if (!rawText) {
+      return safeJsonResponse(res, { error: 'AI未返回内容', details: aiResponse.data }, 500);
+    }
+
+    // 设置流式响应头（前端依旧按流式读取）
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -275,8 +326,28 @@ ${content}
       'Access-Control-Allow-Origin': '*'
     });
 
-    // 流式传输响应
-    response.data.pipe(res);
+    // 按行解析 AI 返回内容：
+    // - 忽略 ``` / ```json 这类代码块标记
+    // - 每一行如果是合法 JSON，就原样写回给前端（一行一个对象）
+    const lines = rawText.split('\n');
+    for (let line of lines) {
+      line = line.trim();
+      if (!line) continue;
+
+      // 跳过代码块标记行
+      if (line.startsWith('```')) continue;
+
+      try {
+        const obj = JSON.parse(line);
+        res.write(JSON.stringify(obj) + '\n');
+      }
+      catch (e) {
+        // 不是合法 JSON 行就忽略，避免中断整个生成过程
+        console.warn('跳过无法解析的 JSON 行:', line);
+      }
+    }
+
+    res.end();
 
   }
   catch (error) {
@@ -455,7 +526,7 @@ app.use((error, req, res, next) => {
 });
 
 // 404处理
-app.use((req, res) => {
+app.use((_req, res) => {
   res.status(404).json({ error: '接口不存在' });
 });
 
