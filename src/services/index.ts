@@ -66,7 +66,8 @@ export default {
     style,
     model,
   }: AIPPTPayload): Promise<any> {
-    return fetch(`${SERVER_URL}/tools/aippt`, {
+    // 使用新的后端接口：一次性返回完整 PPT 数据，前端再触发生成动作
+    return fetch(`${SERVER_URL}/tools/aippt_with_action`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -76,7 +77,6 @@ export default {
         language,
         model,
         style,
-        stream: true,
       }),
     })
   },

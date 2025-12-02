@@ -230,7 +230,7 @@ const createPPT = async (template?: { slides: Slide[], theme: SlideTheme }) => {
 
   if (overwrite.value) resetSlides()
 
-  const stream = await api.AIPPT({
+  const res = await api.AIPPT({
     content: outline.value,
     language: language.value,
     style: style.value,
@@ -247,38 +247,35 @@ const createPPT = async (template?: { slides: Slide[], theme: SlideTheme }) => {
   const templateSlides: Slide[] = templateData!.slides
   const templateTheme: SlideTheme = templateData!.theme
 
-  const reader: ReadableStreamDefaultReader = stream.body.getReader()
-  const decoder = new TextDecoder('utf-8')
-  
-  const readStream = () => {
-    reader.read().then(({ done, value }) => {
-      if (done) {
-        loading.value = false
-        mainStore.setAIPPTDialogState(false)
-        slidesStore.setTheme(templateTheme)
-        return
-      }
-  
-      const chunk = decoder.decode(value, { stream: true })
-      try {
-        // 后端现在直接发送干净的JSON内容，每行一个JSON对象
-        const lines = chunk.split('\n').filter(line => line.trim())
-        for (const line of lines) {
-          if (line.trim()) {
-            const slide: AIPPTSlide = JSON.parse(line.trim())
-            AIPPT(templateSlides, [slide])
-          }
-        }
-      }
-      catch (err) {
-        // eslint-disable-next-line
-        console.error('JSON解析错误:', err, '接收到的数据:', chunk)
-      }
+  try {
+    const data = await res.json()
 
-      readStream()
-    })
+    if (!data.success) {
+      loading.value = false
+      message.error(data.error || 'PPT生成失败，请稍后重试')
+      return
+    }
+
+    const slides: AIPPTSlide[] = data.slides || []
+    if (!slides.length) {
+      loading.value = false
+      message.error('未获取到 PPT 数据')
+      return
+    }
+
+    // 一次性将全部 AI 生成的页面应用到模板中
+    AIPPT(templateSlides, slides)
+
+    loading.value = false
+    mainStore.setAIPPTDialogState(false)
+    slidesStore.setTheme(templateTheme)
   }
-  readStream()
+  catch (err) {
+    // eslint-disable-next-line
+    console.error('解析 AIPPT 接口返回数据失败:', err)
+    loading.value = false
+    message.error('PPT生成失败，请稍后重试')
+  }
 }
 
 const uploadLocalTemplate = () => {
